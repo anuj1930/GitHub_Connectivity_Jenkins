@@ -24,16 +24,16 @@ pipeline {
             steps {
                 checkout scm
                 sh '''
-          set -e
-          git config --global --add safe.directory "$PWD"
+                  set -e
+                  git config --global --add safe.directory "$PWD"
 
-          # Ensure we have enough history for reliable diffs (handle shallow clones)
-          if git rev-parse --is-shallow-repository >/dev/null 2>&1; then
-            git fetch --unshallow --tags || true
-          else
-            git fetch --all --tags --prune
-          fi
-        '''
+                  # Ensure we have enough history for reliable diffs (handle shallow clones)
+                  if git rev-parse --is-shallow-repository >/dev/null 2>&1; then
+                    git fetch --unshallow --tags || true
+                  else
+                    git fetch --all --tags --prune
+                  fi
+                '''
             }
         }
 
@@ -41,10 +41,10 @@ pipeline {
             // Only run this stage when README changed in this build
             when {
                 anyOf {
-                    changeset glob: 'README.md'
-                    changeset glob: 'README.*'
-                    changeset glob: '**/README.md'
-                    changeset glob: '**/README.*'
+                    changeset pattern: 'README.md',       caseSensitive: false
+                    changeset pattern: 'README.*',        caseSensitive: false
+                    changeset pattern: '**/README.md',    caseSensitive: false
+                    changeset pattern: '**/README.*',     caseSensitive: false
                 }
             }
             steps {
@@ -56,9 +56,9 @@ pipeline {
                     if (!base?.trim()) {
                         // Fallback: previous commit if available, else the root commit
                         base = sh(
-              returnStdout: true,
-              script: '(git rev-parse HEAD^ 2>/dev/null) || (git rev-list --max-parents=0 HEAD | tail -1)'
-            ).trim()
+                          returnStdout: true,
+                          script: '(git rev-parse HEAD^ 2>/dev/null) || (git rev-list --max-parents=0 HEAD | tail -1)'
+                        ).trim()
                     }
 
                     echo "Base commit: ${base}"
@@ -66,24 +66,24 @@ pipeline {
 
                     // Produce the diff (only changed lines, 0 context), plus stats and added-lines view
                     sh """
-            set -e
-            echo "────────────────────────────────────────"
-            echo "Changed lines in README (unified=0):"
-            echo "────────────────────────────────────────"
-            git --no-pager diff --no-color -U0 ${base}...${head} -- README* '**/README*' | tee readme.diff || true
+                        set -e
+                        echo "────────────────────────────────────────"
+                        echo "Changed lines in README (unified=0):"
+                        echo "────────────────────────────────────────"
+                        git --no-pager diff --no-color -U0 ${base}...${head} -- README* '**/README*' | tee readme.diff || true
 
-            echo ""
-            echo "────────────────────────────────────────"
-            echo "Summary (added   removed   filename):"
-            echo "────────────────────────────────────────"
-            git --no-pager diff --no-color --numstat ${base}...${head} -- README* '**/README*' | tee readme.numstat || true
+                        echo ""
+                        echo "────────────────────────────────────────"
+                        echo "Summary (added   removed   filename):"
+                        echo "────────────────────────────────────────"
+                        git --no-pager diff --no-color --numstat ${base}...${head} -- README* '**/README*' | tee readme.numstat || true
 
-            echo ""
-            echo "────────────────────────────────────────"
-            echo "Only added lines:"
-            echo "────────────────────────────────────────"
-            git --no-pager diff -U0 ${base}...${head} -- README* '**/README*' | sed -n 's/^+[^+]/&/p' | sed 's/^+//' | tee readme.added || true
-          """
+                        echo ""
+                        echo "────────────────────────────────────────"
+                        echo "Only added lines:"
+                        echo "────────────────────────────────────────"
+                        git --no-pager diff -U0 ${base}...${head} -- README* '**/README*' | sed -n 's/^+[^+]/&/p' | sed 's/^+//' | tee readme.added || true
+                    """
 
                     archiveArtifacts artifacts: 'readme.*', fingerprint: true, allowEmptyArchive: true
                 }
@@ -93,10 +93,10 @@ pipeline {
         stage('Result summary') {
             when {
                 anyOf {
-                    changeset glob: 'README.md'
-                    changeset glob: 'README.*'
-                    changeset glob: '**/README.md'
-                    changeset glob: '**/README.*'
+                    changeset pattern: 'README.md',       caseSensitive: false
+                    changeset pattern: 'README.*',        caseSensitive: false
+                    changeset pattern: '**/README.md',    caseSensitive: false
+                    changeset pattern: '**/README.*',     caseSensitive: false
                 }
             }
             steps {
@@ -119,7 +119,7 @@ pipeline {
                         }
                         echo "README update result: +${totalAdded} / -${totalDeleted} lines across ${stats.split('\\r?\\n').size()} file(s)."
                         currentBuild.description = "README +${totalAdded}/-${totalDeleted}"
-          } else {
+                    } else {
                         echo 'No numstat produced; possibly no effective change to README content.'
                     }
                 }
@@ -131,10 +131,10 @@ pipeline {
             when {
                 not {
                     anyOf {
-                        changeset glob: 'README.md'
-                        changeset glob: 'README.*'
-                        changeset glob: '**/README.md'
-                        changeset glob: '**/README.*'
+                        changeset pattern: 'README.md',       caseSensitive: false
+                        changeset pattern: 'README.*',        caseSensitive: false
+                        changeset pattern: '**/README.md',    caseSensitive: false
+                        changeset pattern: '**/README.*',     caseSensitive: false
                     }
                 }
             }
