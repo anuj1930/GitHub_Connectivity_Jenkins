@@ -30,7 +30,7 @@ pipeline {
                           set -e
                           git --no-pager log -1 --oneline || true
                           git config --global --add safe.directory "$PWD"
-                          # Check output (not exit code) to decide shallow vs full
+                          # Correct shallow detection: check output, not exit code
                           if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
                             git fetch --unshallow --tags || true
                           else
@@ -56,15 +56,15 @@ pipeline {
         stage('Detect README changes (persist previous head)') {
             steps {
                 script {
-                    // Current HEAD
+                    // HEAD now
                     String head = isUnix()
                         ? sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
                         : bat(returnStdout: true, script: '@echo off\r\nfor /f "delims=" %%A in (\'git rev-parse HEAD\') do @echo %%A').trim()
 
-                    // Try previous head from workspace
+                    // Prefer previously stored .last_head as base
                     String base = fileExists('.last_head') ? readFile('.last_head').trim() : ''
 
-                    // If no stored base, try Jenkins envs; else derive from Git history
+                    // If not available, fall back to Jenkins envs, else previous commit or root
                     if (!base?.trim()) {
                         base = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: env.GIT_PREVIOUS_COMMIT ?: ''
                     }
@@ -82,7 +82,7 @@ pipeline {
                         }
                     }
 
-                    // If base == head (e.g., first run after persisting), move base one back
+                    // If base equals head, attempt previous commit as base
                     if (base == head) {
                         if (isUnix()) {
                             String alt = sh(returnStdout: true, script: 'git rev-parse HEAD^ 2>/dev/null || true').trim()
@@ -96,7 +96,7 @@ pipeline {
                     echo "Base commit for detection: ${base}"
                     echo "Head commit for detection: ${head}"
 
-                    // Compute list of changed README files between base...head
+                    // Which README files changed between base...head?
                     String changedList = isUnix()
                         ? sh(returnStdout: true,
                               script: "git diff --name-only ${base}...${head} -- ':(glob)README*' ':(glob)**/README*' || true"
@@ -109,15 +109,19 @@ pipeline {
                     List<String> changedReadmes = changedList ? changedList.split('\\r?\\n') as List<String> : []
                     echo "Changed README files: ${changedReadmes}"
 
-                    env.README_CHANGED = changedReadmes && changedReadmes.size() > 0 ? 'true' : 'false'
-                    env.DIFF_BASE = base
-                    env.DIFF_HEAD = head
+                    // Set env explicitly (be cautious about Groovy truthiness)
+                    env['README_CHANGED'] = (changedReadmes && changedReadmes.size() > 0) ? 'true' : 'false'
+                    env['DIFF_BASE'] = base
+                    env['DIFF_HEAD'] = head
+
+                    echo "README_CHANGED=${env.README_CHANGED}"
                 }
             }
         }
 
         stage('Show README diff') {
-            when { environment name: 'README_CHANGED', value: 'true' }
+            // Use expression to evaluate the *current* env value set above
+            when { expression { env.README_CHANGED?.trim() == 'true' } }
             steps {
                 script {
                     String base = env.DIFF_BASE
@@ -146,6 +150,22 @@ pipeline {
                           echo "────────────────────────────────────────"
                           git --no-pager diff -U0 ${base}...${head} -- ':(glob)README*' ':(glob)**/README*' \
                             | sed -n 's/^+[^+]/&/p' | sed 's/^+//' | tee readme.added || true
+
+                          # Also capture only removed lines for word stats
+                          git --no-pager diff -U0 ${base}...${head} -- ':(glob)README*' ':(glob)**/README*' \
+                            | sed -n 's/^-\\([^-]\\)/\\1/p' | sed 's/^-//' | tee readme.removed || true
+
+                          # Word counts (added/removed)
+                          ADDED_WORDS=\$(cat readme.added 2>/dev/null | tr -s '[:space:]' '\\n' | grep -c -E '\\S' || true)
+                          REMOVED_WORDS=\$(cat readme.removed 2>/dev/null | tr -s '[:space:]' '\\n' | grep -c -E '\\S' || true)
+                          printf "added_words=%s\\nremoved_words=%s\\n" "\$ADDED_WORDS" "\$REMOVED_WORDS" | tee readme.wordstats
+
+                          echo ""
+                          echo "────────────────────────────────────────"
+                          echo "Word-level summary:"
+                          echo "────────────────────────────────────────"
+                          echo "Added words   : \$ADDED_WORDS"
+                          echo "Removed words : \$REMOVED_WORDS"
                         """
                     } else {
                         bat """@echo off
@@ -164,7 +184,24 @@ pipeline {
                         echo ────────────────────────────────────────
                         echo Only added lines:
                         echo ────────────────────────────────────────
-                        git --no-pager diff -U0 ${base}...${head} -- ":(glob)README*" ":(glob)**/README*" | findstr /R "^+" | findstr /V "++" > readme.added 2>nul || type NUL > readme.added
+                        git --no-pager diff -U0 ${base}...${head} -- ":(glob)README*" ":(glob)**/README*" | findstr /R "^[+]" | findstr /V "^[+][+]" > readme.added 2>nul || type NUL > readme.added
+
+                        rem Capture only removed lines (not headers like --- a/file)
+                        git --no-pager diff -U0 ${base}...${head} -- ":(glob)README*" ":(glob)**/README*" | findstr /R "^[-]" | findstr /V "^[-][-]" > readme.removed 2>nul || type NUL > readme.removed
+
+                        rem Word counts via PowerShell
+                        powershell -NoProfile -Command ^
+                          "$a = (Test-Path 'readme.added')    ? (Get-Content 'readme.added'  -Raw) : ''; " ^
+                          "$r = (Test-Path 'readme.removed')  ? (Get-Content 'readme.removed' -Raw) : ''; " ^
+                          "$aCount = ($a -split '\\s+') | Where-Object { \\$_ -ne '' } | Measure-Object | ForEach-Object Count; " ^
+                          "$rCount = ($r -split '\\s+') | Where-Object { \\$_ -ne '' } | Measure-Object | ForEach-Object Count; " ^
+                          "'added_words='  + $aCount + \"`n\" + 'removed_words=' + $rCount | Out-File 'readme.wordstats' -Encoding ascii; " ^
+                          "Write-Host '────────────────────────────────────────'; " ^
+                          "Write-Host 'Word-level summary:'; " ^
+                          "Write-Host '────────────────────────────────────────'; " ^
+                          "Write-Host ('Added words   : ' + $aCount); " ^
+                          "Write-Host ('Removed words : ' + $rCount); "
+
                         """
                     }
 
@@ -175,7 +212,7 @@ pipeline {
 
         // -------------------- TEST ONLY when README changed --------------------
         stage('Test') {
-            when { environment name: 'README_CHANGED', value: 'true' }
+            when { expression { env.README_CHANGED?.trim() == 'true' } }
             steps {
                 echo 'Running tests (README changed)…'
                 script {
@@ -202,7 +239,7 @@ pipeline {
         }
 
         stage('No README change — Skip Test') {
-            when { not { environment name: 'README_CHANGED', value: 'true' } }
+            when { expression { env.README_CHANGED?.trim() != 'true' } }
             steps {
                 echo 'No README changes detected; skipping Test stage.'
             }
