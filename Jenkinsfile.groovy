@@ -36,7 +36,9 @@ pipeline {
                     if (isUnix()) {
                         sh 'git --no-pager log -1 --oneline || true'
                     } else {
-                        bat '@echo off\r\ngit --no-pager log -1 --oneline || exit /b 0'
+                        bat """@echo off
+git --no-pager log -1 --oneline || exit /b 0
+"""
                     }
                 }
             }
@@ -68,33 +70,54 @@ pipeline {
                                 from = sh(returnStdout: true, script: "git rev-parse HEAD~1 || echo ''").trim()
                             }
                         } else {
-                            to = bat(returnStdout: true, script: "@echo off\r\ngit rev-parse HEAD").trim()
+                            to = bat(returnStdout: true, script: """@echo off
+for /f "delims=" %%A in ('git rev-parse HEAD') do @echo %%A
+""").trim()
+
                             if (!from?.trim()) {
-                                // If first commit, HEAD~1 will fail; return empty string
-                                from = bat(returnStdout: true,
-                                           script: "@echo off\r\n(git rev-parse HEAD~1) 2>nul || echo").trim()
+                                // If first commit, HEAD~1 may fail; produce empty output instead of failing
+                                from = bat(returnStdout: true, script: """@echo off
+for /f "delims=" %%A in ('git rev-parse HEAD^~1 2^>nul') do @echo %%A
+""").trim()
                             }
                         }
 
                         if (from?.trim()) {
-                            def diffCmd = "git diff --name-only ${from} ${to} || true"
-                            def out = isUnix()
-                                    ? sh(returnStdout: true, script: diffCmd).trim()
-                                    : bat(returnStdout: true, script: "@echo off\r\n${diffCmd}").trim()
-
-                            if (out) {
-                                // split on both \n and \r\n to support all systems
-                                changedFiles = out.split('\\r?\\n') as List<String>
+                            if (isUnix()) {
+                                def out = sh(returnStdout: true,
+                                             script: "git diff --name-only ${from} ${to} || true").trim()
+                                if (out) changedFiles = out.split('\\r?\\n') as List<String>
+                            } else {
+                                def out = bat(returnStdout: true, script: """@echo off
+git diff --name-only ${from} ${to} || exit /b 0
+""").trim()
+                                if (out) changedFiles = out.split('\\r?\\n') as List<String>
                             }
                         } else {
                             echo "Could not determine previous commit (first build or shallow history)."
                         }
                     }
 
-                    echo "Changed files: ${changedFiles}"
+                    echo "Changed files (raw): ${changedFiles}"
 
-                    // README, README.md, docs/README, etc. (case-insensitive)
-                    def readmeChanged = changedFiles.any { it ==~ /(?i)(^|.*\/)README(\.[^\/]+)?$/ }
+                    // --- Robust cross-platform detection ---
+                    // Normalize: trim whitespace, convert backslashes, lowercase
+                    def normalized = changedFiles.collect { p ->
+                        (p ?: '')
+                            .trim()
+                            .replace('\\', '/')
+                            .toLowerCase()
+                    }
+                    echo "Changed files (normalized): ${normalized}"
+
+                    // Match README variants anywhere in the tree
+                    def readmeChanged = normalized.any { f ->
+                        f == 'readme' ||
+                        f == 'readme.md' ||
+                        f.endsWith('/readme') ||
+                        f.endsWith('/readme.md')
+                    }
+
                     env.README_CHANGED = readmeChanged ? 'true' : 'false'
                     echo "README changed? ${env.README_CHANGED}"
                 }
