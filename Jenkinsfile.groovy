@@ -174,6 +174,16 @@ pipeline {
                 echo 'No README changes detected; skipping Build/Test stages.'
             }
         }
+
+        stage('Build') {
+            when { changeset '**/README*' }   // matches README and README.* anywhere
+            steps { /* build steps */ }
+        }
+
+        stage('Test') {
+            when { changeset '**/README*' }
+            steps { /* test steps */ }
+        }
     }
 
     post {
