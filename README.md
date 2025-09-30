@@ -17,7 +17,11 @@ Java
             int i = 1;
             print(i);
             //result = 1
+
+            //past change this will new chnages.
         }
     }
 ```
-## Falsy update.
+## Falsy update. 
+
+Hey boy ......
