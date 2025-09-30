@@ -21,6 +21,7 @@ pipeline {
     }
 
     stages {
+
         stage('Checkout') {
             steps {
                 checkout scm
@@ -30,7 +31,7 @@ pipeline {
                           set -e
                           git --no-pager log -1 --oneline || true
                           git config --global --add safe.directory "$PWD"
-                          # Correct shallow detection: check output, not exit code
+                          # Check output, not exit code
                           if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
                             git fetch --unshallow --tags || true
                           else
@@ -61,10 +62,10 @@ pipeline {
                         ? sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
                         : bat(returnStdout: true, script: '@echo off\r\nfor /f "delims=" %%A in (\'git rev-parse HEAD\') do @echo %%A').trim()
 
-                    // Prefer previously stored .last_head as base
+                    // Base from workspace if present
                     String base = fileExists('.last_head') ? readFile('.last_head').trim() : ''
 
-                    // If not available, fall back to Jenkins envs, else previous commit or root
+                    // Fallbacks
                     if (!base?.trim()) {
                         base = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: env.GIT_PREVIOUS_COMMIT ?: ''
                     }
@@ -82,7 +83,7 @@ pipeline {
                         }
                     }
 
-                    // If base equals head, attempt previous commit as base
+                    // If base == head, try previous commit
                     if (base == head) {
                         if (isUnix()) {
                             String alt = sh(returnStdout: true, script: 'git rev-parse HEAD^ 2>/dev/null || true').trim()
@@ -96,7 +97,25 @@ pipeline {
                     echo "Base commit for detection: ${base}"
                     echo "Head commit for detection: ${head}"
 
-                    // Which README files changed between base...head?
+                    // === KEY CHANGE: detect via returnStatus (git exit code) ===
+                    int rc = isUnix()
+                        ? sh(returnStatus: true, script: "git diff --quiet ${base}...${head} -- ':(glob)README*' ':(glob)**/README*'")
+                        : bat(returnStatus: true, script:
+                              '@echo off\r\n' +
+                              'git diff --quiet ' + base + '...' + head + ' -- ":(glob)README*" ":(glob)**/README*"'
+                          )
+
+                    // rc = 0 no changes, rc = 1 changes, rc > 1 error
+                    if (rc == 1) {
+                        env.README_CHANGED = 'true'
+                    } else if (rc == 0) {
+                        env.README_CHANGED = 'false'
+                    } else {
+                        echo "git diff returned error code ${rc}; treating as no README changes."
+                        env.README_CHANGED = 'false'
+                    }
+
+                    // For transparency, also list files (best-effort)
                     String changedList = isUnix()
                         ? sh(returnStdout: true,
                               script: "git diff --name-only ${base}...${head} -- ':(glob)README*' ':(glob)**/README*' || true"
@@ -105,22 +124,18 @@ pipeline {
                               '@echo off\r\n' +
                               'git diff --name-only ' + base + '...' + head + ' -- ":(glob)README*" ":(glob)**/README*" || exit /b 0'
                           ).trim()
-
                     List<String> changedReadmes = changedList ? changedList.split('\\r?\\n') as List<String> : []
                     echo "Changed README files: ${changedReadmes}"
+                    echo "README_CHANGED=${env.README_CHANGED}"
 
-                    // ✅ Sandbox-safe env assignments (no bracket syntax)
-                    env.README_CHANGED = (changedReadmes && changedReadmes.size() > 0) ? 'true' : 'false'
+                    // Export base/head for downstream stages
                     env.DIFF_BASE = base
                     env.DIFF_HEAD = head
-
-                    echo "README_CHANGED=${env.README_CHANGED}"
                 }
             }
         }
 
         stage('Show README diff') {
-            // ✅ Use expression to read the runtime env value
             when { expression { env.README_CHANGED?.trim() == 'true' } }
             steps {
                 script {
