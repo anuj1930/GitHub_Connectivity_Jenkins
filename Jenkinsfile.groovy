@@ -35,7 +35,9 @@ pipeline {
                     if (isUnix()) {
                         sh 'git --no-pager log -1 --oneline || true'
                     } else {
-                        bat '''@echo off git --no-pager log -1 --oneline || exit /b 0 '''
+                        bat '''@echo off
+                        git --no-pager log -1 --oneline || exit /b 0
+                        '''
                     }
                 }
             }
@@ -67,11 +69,15 @@ pipeline {
                                 from = sh(returnStdout: true, script: "git rev-parse HEAD~1 || echo ''").trim()
                             }
                         } else {
-                            to = bat(returnStdout: true, script: """@echo off for /f "delims=" %%A in ('git rev-parse HEAD') do @echo %%A """).trim()
+                            to = bat(returnStdout: true, script: """@echo off
+                            for /f "delims=" %%A in ('git rev-parse HEAD') do @echo %%A
+                            """).trim()
 
                             if (!from?.trim()) {
                                 // If first commit, HEAD~1 may fail; produce empty output instead of failing
-                                from = bat(returnStdout: true, script: """@echo off for /f "delims=" %%A in ('git rev-parse HEAD^~1 2^>nul') do @echo %%A """).trim()
+                                from = bat(returnStdout: true, script: """@echo off
+                                for /f "delims=" %%A in ('git rev-parse HEAD^~1 2^>nul') do @echo %%A
+                                """).trim()
                             }
                         }
 
@@ -81,7 +87,9 @@ pipeline {
                                              script: "git diff --name-only ${from} ${to} || true").trim()
                                 if (out) changedFiles = out.split('\\r?\\n') as List<String>
                             } else {
-                                def out = bat(returnStdout: true, script: """@echo off git diff --name-only ${from} ${to} || exit /b 0 """).trim()
+                                def out = bat(returnStdout: true, script: """@echo off
+                                git diff --name-only ${from} ${to} || exit /b 0
+                                """).trim()
                                 if (out) changedFiles = out.split('\\r?\\n') as List<String>
                             }
                         } else {
