@@ -9,7 +9,7 @@ pipeline {
     }
 
     triggers {
-        // Poll every ~5 minutes (prefer GitHub webhooks if you can)
+        // Poll every ~5 minutes (prefer GitHub webhook if available)
         pollSCM('H/5 * * * *')
     }
 
@@ -21,7 +21,8 @@ pipeline {
     }
 
     stages {
-        stage('Checkout (from repo in code)') {
+
+        stage('Checkout') {
             steps {
                 checkout scm
                 script {
@@ -30,8 +31,7 @@ pipeline {
                           set -e
                           git --no-pager log -1 --oneline || true
                           git config --global --add safe.directory "$PWD"
-
-                          # Correct shallow detection: check the printed value, not exit code
+                          # Check output, not exit code
                           if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
                             git fetch --unshallow --tags || true
                           else
@@ -42,8 +42,6 @@ pipeline {
                         bat '''@echo off
                         git --no-pager log -1 --oneline || exit /b 0
                         git config --global --add safe.directory "%CD%" 2>nul
-
-                        rem Correct shallow detection: check output, not exit code
                         for /f "delims=" %%S in ('git rev-parse --is-shallow-repository') do set SHALLOW=%%S
                         if /I "%SHALLOW%"=="true" (
                           git fetch --unshallow --tags || exit /b 0
@@ -56,89 +54,56 @@ pipeline {
             }
         }
 
-        stage('Detect README changes') {
+        stage('Detect README changes (persistent)') {
             steps {
                 script {
-                    def changedFiles = []
-                    // Prefer Jenkins changeSets
-                    for (cs in currentBuild.changeSets) {
-                        for (entry in cs.items) {
-                            for (file in entry.affectedFiles) {
-                                changedFiles << file.path
-                            }
+                    // 1) List README files tracked by git (root + any subfolder)
+                    String listCmdUnix = "git ls-files -- ':(glob)README*' ':(glob)**/README*' || true"
+                    String listCmdWin  = "@echo off\r\ngit ls-files -- \":(glob)README*\" \":(glob)**/README*\" || exit /b 0"
+
+                    def filesOut = isUnix()
+                        ? sh(returnStdout: true, script: listCmdUnix).trim()
+                        : bat(returnStdout: true, script: listCmdWin).trim()
+
+                    List<String> readmeFiles = filesOut ? filesOut.split('\\r?\\n') as List<String> : []
+                    echo "README files found: ${readmeFiles}"
+
+                    // 2) Compute stable signature of paths+contents (SHA-256)
+                    import java.security.MessageDigest
+                    def md = MessageDigest.getInstance('SHA-256')
+                    readmeFiles.sort().each { path ->
+                        if (fileExists(path)) {
+                            String content = readFile(file: path)
+                            md.update(path.getBytes('UTF-8'))
+                            md.update((byte)0)
+                            md.update(content.getBytes('UTF-8'))
+                            md.update((byte)0)
                         }
                     }
+                    String currSig = md.digest().collect { String.format('%02x', it) }.join()
 
-                    // Fallback to git diff if changeSets empty (common with pollSCM)
-                    if (changedFiles.isEmpty()) {
-                        echo 'No changeSets found; falling back to git diff to detect changed files.'
-
-                        String from = (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: env.GIT_PREVIOUS_COMMIT)
-                        String to
-
-                        if (isUnix()) {
-                            to = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
-                            if (!from?.trim()) {
-                                // previous commit else root
-                                from = sh(
-                                  returnStdout: true,
-                                  script: '(git rev-parse HEAD~1 2>/dev/null) || (git rev-list --max-parents=0 HEAD | head -1)'
-                                ).trim()
-                            }
-                            if (from?.trim()) {
-                                def out = sh(returnStdout: true,
-                                             script: "git diff --name-only ${from} ${to} || true").trim()
-                                if (out) changedFiles = out.split('\\r?\\n') as List<String>
-                            } else {
-                                echo 'Could not determine previous commit (first build or shallow history).'
-                            }
-                        } else {
-                            to = bat(returnStdout: true, script: """@echo off
+                    // 3) Load previous signature (if any) and last processed HEAD
+                    String prevSig  = fileExists('.readme.sig') ? readFile('.readme.sig').trim() : ''
+                    String prevHead = fileExists('.last_head')  ? readFile('.last_head').trim()  : ''
+                    String head     = isUnix()
+                        ? sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                        : bat(returnStdout: true, script: """@echo off
                             for /f "delims=" %%A in ('git rev-parse HEAD') do @echo %%A
-                            """).trim()
+                          """).trim()
 
-                            if (!from?.trim()) {
-                                // Root commit via pure git (no Unix tools)
-                                from = bat(returnStdout: true, script: """@echo off
-                                for /f "delims=" %%A in ('git rev-list --max-parents=0 HEAD') do @echo %%A
-                                """).trim()
-                                if (!from?.trim()) {
-                                    from = bat(returnStdout: true, script: """@echo off
-                                    for /f "delims=" %%A in ('git rev-parse HEAD^ 2^>nul') do @echo %%A
-                                    """).trim()
-                                }
-                            }
-                            if (from?.trim()) {
-                                def out = bat(returnStdout: true, script: """@echo off
-                                git diff --name-only ${from} ${to} || exit /b 0
-                                """).trim()
-                                if (out) changedFiles = out.split('\\r?\\n') as List<String>
-                            } else {
-                                echo 'Could not determine previous commit (first build or shallow history).'
-                            }
-                        }
-                    }
+                    boolean hasReadme = !readmeFiles.isEmpty()
+                    boolean readmeChanged = hasReadme && (currSig != prevSig)
 
-                    echo "Changed files (raw): ${changedFiles}"
+                    echo "Prev README signature: ${prevSig ?: '(none)'}"
+                    echo "Curr README signature: ${currSig}"
+                    echo "Prev HEAD: ${prevHead ?: '(none)'}"
+                    echo "Curr HEAD: ${head}"
+                    echo "README changed (by signature)? ${readmeChanged}"
 
-                    def normalized = changedFiles.collect { p ->
-                        (p ?: '')
-                          .trim()
-                          .replace('\\', '/')
-                          .toLowerCase()
-                    }
-                    echo "Changed files (normalized): ${normalized}"
-
-                    // Bullet-proof README match: (^|/)readme(.anything)?$
-                    def readmeChanged = normalized.any { f -> f ==~ /(^|\/)readme(\..*)?$/ }
-
-                    // Optional: tiny, helpful debug per file (keeps logs professional)
-                    normalized.each { f ->
-                        echo String.format('  - match(readme)? %-40s : %s', f, (f ==~ /(^|\/)readme(\..*)?$/))
-                    }
-
+                    // 4) Export decision and persist current state for next build
                     env.README_CHANGED = readmeChanged ? 'true' : 'false'
-                    echo "README changed? ${env.README_CHANGED}"
+                    writeFile file: '.readme.sig', text: currSig + '\n'
+                    writeFile file: '.last_head',  text: head    + '\n'
                 }
             }
         }
@@ -147,21 +112,35 @@ pipeline {
             when { environment name: 'README_CHANGED', value: 'true' }
             steps {
                 script {
-                    String base = (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: env.GIT_PREVIOUS_COMMIT)
-                    String head
+                    String base = fileExists('.last_head') ? readFile('.last_head').trim() : ''
+                    String head = isUnix()
+                        ? sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                        : bat(returnStdout: true, script: """@echo off
+                            for /f "delims=" %%A in ('git rev-parse HEAD') do @echo %%A
+                          """).trim()
+
+                    // Use previous HEAD as base if available and different; else fallback
+                    if (!base?.trim() || base == head) {
+                        if (isUnix()) {
+                            base = sh(returnStdout: true,
+                                      script: '(git rev-parse HEAD^ 2>/dev/null) || (git rev-list --max-parents=0 HEAD | head -1)'
+                            ).trim()
+                        } else {
+                            base = bat(returnStdout: true, script: """@echo off
+                            for /f "delims=" %%A in ('git rev-parse HEAD^ 2^>nul') do @echo %%A
+                            """).trim()
+                            if (!base?.trim()) {
+                                base = bat(returnStdout: true, script: """@echo off
+                                for /f "delims=" %%A in ('git rev-list --max-parents=0 HEAD') do @echo %%A
+                                """).trim()
+                            }
+                        }
+                    }
+
+                    echo "Diff base: ${base}"
+                    echo "Diff head: ${head}"
 
                     if (isUnix()) {
-                        head = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
-                        if (!base?.trim()) {
-                            base = sh(
-                              returnStdout: true,
-                              script: '(git rev-parse HEAD^ 2>/dev/null) || (git rev-list --max-parents=0 HEAD | head -1)'
-                            ).trim()
-                        }
-
-                        echo "Base commit: ${base}"
-                        echo "Head commit: ${head}"
-
                         sh """
                           set -e
                           echo "────────────────────────────────────────"
@@ -183,23 +162,6 @@ pipeline {
                             | sed -n 's/^+[^+]/&/p' | sed 's/^+//' | tee readme.added || true
                         """
                     } else {
-                        head = bat(returnStdout: true, script: """@echo off
-                        for /f "delims=" %%A in ('git rev-parse HEAD') do @echo %%A
-                        """).trim()
-                        if (!base?.trim()) {
-                            base = bat(returnStdout: true, script: """@echo off
-                            for /f "delims=" %%A in ('git rev-parse HEAD^ 2^>nul') do @echo %%A
-                            """).trim()
-                            if (!base?.trim()) {
-                                base = bat(returnStdout: true, script: """@echo off
-                                for /f "delims=" %%A in ('git rev-list --max-parents=0 HEAD') do @echo %%A
-                                """).trim()
-                            }
-                        }
-
-                        echo "Base commit: ${base}"
-                        echo "Head commit: ${head}"
-
                         bat """@echo off
                         echo ────────────────────────────────────────
                         echo Changed lines in README (unified=0):
@@ -235,7 +197,6 @@ pipeline {
                     boolean hasWrapper = fileExists('mvnw') || fileExists('mvnw.cmd')
                     String mvnCmd = hasWrapper ? (win ? 'mvnw.cmd' : './mvnw') : (win ? 'mvn.cmd' : 'mvn')
 
-                    // Show Maven version but don't fail the build if Maven not present
                     if (win) {
                         bat "\"${mvnCmd}\" -v || exit /b 0"
                     } else {
