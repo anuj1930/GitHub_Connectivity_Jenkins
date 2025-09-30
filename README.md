@@ -15,6 +15,7 @@ Java
             System.out.println("Hello, World!");
             System.out.println("Hey this is new update!");
             int i = 0;
+            print(i);
         }
     }
 ```
