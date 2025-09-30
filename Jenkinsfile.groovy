@@ -9,19 +9,21 @@ pipeline {
     }
 
     triggers {
-        // Poll every ~5 minutes. Prefer GitHub webhooks if available.
+        // Poll every ~5 minutes. Prefer a GitHub webhook if available.
         pollSCM('H/5 * * * *')
     }
 
     environment {
         README_CHANGED = 'false'
-        DIFF_BASE = ''
-        DIFF_HEAD = ''
-        MAVEN_REPO = "${WORKSPACE}/.m2/repository"
+        DIFF_BASE      = ''
+        DIFF_HEAD      = ''
+        MAVEN_REPO     = "${WORKSPACE}/.m2/repository"
     }
 
     stages {
-        // 1) Checkout + ensure enough history
+    /* -----------------------------------------------------------
+     * 1) Checkout and ensure enough history (fixes unshallow fatal)
+     * ----------------------------------------------------------- */
         stage('Checkout') {
             steps {
                 checkout scm
@@ -54,18 +56,25 @@ pipeline {
             }
         }
 
-        // 2) Establish base and head (persisted base if available)
+    /* -----------------------------------------------------------
+     * 2) Compute Base / Head robustly and print them
+     * ----------------------------------------------------------- */
         stage('Locate base/head') {
             steps {
                 script {
+                    // HEAD (current)
                     String head = isUnix()
             ? sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
             : bat(returnStdout: true, script: '@echo off\r\nfor /f "delims=" %%A in (\'git rev-parse HEAD\') do @echo %%A').trim()
 
+                    // Preferred base: last processed head stored in workspace
                     String base = fileExists('.last_head') ? readFile('.last_head').trim() : ''
+
+                    // Fallback to Jenkins envs
                     if (!base?.trim()) {
                         base = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: env.GIT_PREVIOUS_COMMIT ?: ''
                     }
+                    // Fallback to previous commit, else root
                     if (!base?.trim()) {
                         if (isUnix()) {
                             base = sh(returnStdout: true, script: '(git rev-parse HEAD^ 2>/dev/null) || (git rev-list --max-parents=0 HEAD | head -1)').trim()
@@ -76,8 +85,7 @@ pipeline {
                             }
                         }
                     }
-
-                    // If base==head, try one commit back
+                    // If base==head (e.g., immediately after persisting), try one back
                     if (base == head) {
                         if (isUnix()) {
                             String alt = sh(returnStdout: true, script: 'git rev-parse HEAD^ 2>/dev/null || true').trim()
@@ -86,6 +94,11 @@ pipeline {
                             String alt = bat(returnStdout: true, script: '@echo off\r\nfor /f "delims=" %%A in (\'git rev-parse HEAD^ 2^>nul\') do @echo %%A').trim()
                             if (alt) base = alt
                         }
+                    }
+
+                    // Final guard: fail early if empty to avoid "git diff .."
+                    if (!head?.trim() || !base?.trim()) {
+                        error "Computed invalid base/head. base='${base}', head='${head}'. Check Git history and Checkout step."
                     }
 
                     echo "Base commit: ${base}"
@@ -97,29 +110,30 @@ pipeline {
             }
         }
 
-        // 3) Diagnostics — what Git sees as changed files (two-dot and triple-dot)
-        stage('Diagnostics — changed files') {
+    /* -----------------------------------------------------------
+     * 3) Diagnostics — show changed files for .. and ...
+     * ----------------------------------------------------------- */
+        stage('Diagnostics — name-only') {
             steps {
                 script {
                     if (isUnix()) {
                         withEnv(["BASE=${env.DIFF_BASE}", "HEAD=${env.DIFF_HEAD}"]) {
                             sh '''
                 set -e
-                echo "### name-only (two-dot) $BASE..$HEAD"
+                echo "### two-dot: $BASE..$HEAD"
                 git diff --name-only $BASE..$HEAD || true
-
                 echo ""
-                echo "### name-only (triple-dot) $BASE...$HEAD"
+                echo "### triple-dot: $BASE...$HEAD"
                 git diff --name-only $BASE...$HEAD || true
               '''
                         }
           } else {
                         bat '''@echo off
-            echo ### name-only (two-dot) %DIFF_BASE%..%DIFF_HEAD%
+            echo ### two-dot: %DIFF_BASE%..%DIFF_HEAD%
             git diff --name-only %DIFF_BASE%..%DIFF_HEAD% || exit /b 0
 
             echo.
-            echo ### name-only (triple-dot) %DIFF_BASE%...%DIFF_HEAD%
+            echo ### triple-dot: %DIFF_BASE%...%DIFF_HEAD%
             git diff --name-only %DIFF_BASE%...%DIFF_HEAD% || exit /b 0
             '''
                     }
@@ -127,7 +141,9 @@ pipeline {
             }
         }
 
-        // 4) Detect README changes by filtering name-only lists (robust, cross-platform)
+    /* -----------------------------------------------------------
+     * 4) Detect README changes (robust, cross-platform)
+     * ----------------------------------------------------------- */
         stage('Detect README changes') {
             steps {
                 script {
@@ -139,7 +155,7 @@ pipeline {
                 git diff --name-only $BASE...$HEAD > .changed_3 || true
                 cat .changed_2 .changed_3 | sed 's/\\r$//' | sort -u > .changed_all || true
 
-                # Filter to README files (case-insensitive)
+                # Normalize slashes, lowercase, then filter README (case-insensitive)
                 cat .changed_all | sed 's/\\\\/\\//g' | awk '{print tolower($0)}' \
                   | awk '/(^|\\/)readme(\\..*)?$/ {print}' \
                   | sort -u > readme.changed.list || true
@@ -151,10 +167,10 @@ pipeline {
             git diff --name-only %DIFF_BASE%...%DIFF_HEAD% > .changed_3 2>nul || type NUL > .changed_3
             type .changed_2 .changed_3 > .changed_all
 
-            rem Normalize slashes, lowercase, filter README paths, unique
+            rem Normalize slashes, lowercase, filter README, unique
             powershell -NoProfile -Command ^
               "$list = Get-Content '.changed_all' | ForEach-Object { \$_ -replace '\\\\','/' } | ForEach-Object { \$_.ToLower() }; " ^
-              "$out = $list | Where-Object { \$_ -match '(^|/ )readme(\\..*)?$' -or \$_ -match '(^|/)readme(\\..*)?$' } | Sort-Object -Unique; " ^
+              "$out = $list | Where-Object { \$_ -match '(^|/)readme(\\..*)?$' } | Sort-Object -Unique; " ^
               "$out | Set-Content 'readme.changed.list' -Encoding ascii"
             '''
                     }
@@ -164,9 +180,7 @@ pipeline {
             ? readFile('readme.changed.list').trim().split('\\r?\\n') as List<String>
             : []
 
-                    if (changed.size() == 1 && changed[0].trim() == '') {
-                        changed = []
-                    }
+                    if (changed.size() == 1 && changed[0].trim() == '') changed = []
 
                     echo "Changed README files (final): ${changed}"
                     env.README_CHANGED = (changed && changed.size() > 0) ? 'true' : 'false'
@@ -175,7 +189,9 @@ pipeline {
             }
         }
 
-        // 5) Show compact diff + counts when README changed
+    /* -----------------------------------------------------------
+     * 5) Show compact diff + numstat + word counts (if README changed)
+     * ----------------------------------------------------------- */
         stage('Show README diff') {
             when { expression { env.README_CHANGED?.trim() == 'true' } }
             steps {
@@ -184,37 +200,27 @@ pipeline {
                         withEnv(["BASE=${env.DIFF_BASE}", "HEAD=${env.DIFF_HEAD}"]) {
                             sh '''
                 set -e
-                echo "────────────────────────────────────────"
-                echo "Changed lines in README (unified=0):"
-                echo "────────────────────────────────────────"
                 if [ -s readme.changed.list ]; then
-                  git --no-pager diff --no-color -U0 $BASE..$HEAD -- $(sed 's/\\r$//' readme.changed.list | tr '\\n' ' ') | tee readme.diff || true
-                else
-                  : > readme.diff
-                fi
+                  files=$(sed 's/\\r$//' readme.changed.list | tr '\\n' ' ')
+                  echo "────────────────────────────────────────"
+                  echo "Changed lines in README (unified=0):"
+                  echo "────────────────────────────────────────"
+                  git --no-pager diff --no-color -U0 $BASE..$HEAD -- $files | tee readme.diff || true
 
-                echo ""
-                echo "────────────────────────────────────────"
-                echo "Summary (added   removed   filename):"
-                echo "────────────────────────────────────────"
-                if [ -s readme.changed.list ]; then
-                  git --no-pager diff --no-color --numstat $BASE..$HEAD -- $(sed 's/\\r$//' readme.changed.list | tr '\\n' ' ') | tee readme.numstat || true
-                else
-                  : > readme.numstat
-                fi
+                  echo ""
+                  echo "────────────────────────────────────────"
+                  echo "Summary (added   removed   filename):"
+                  echo "────────────────────────────────────────"
+                  git --no-pager diff --no-color --numstat $BASE..$HEAD -- $files | tee readme.numstat || true
 
-                echo ""
-                echo "────────────────────────────────────────"
-                echo "Only added / removed lines:"
-                echo "────────────────────────────────────────"
-                if [ -s readme.changed.list ]; then
-                  git --no-pager diff -U0 $BASE..$HEAD -- $(sed 's/\\r$//' readme.changed.list | tr '\\n' ' ') \
-                    | sed -n 's/^+[^+]/&/p' | sed 's/^+//' | tee readme.added || true
-                  git --no-pager diff -U0 $BASE..$HEAD -- $(sed 's/\\r$//' readme.changed.list | tr '\\n' ' ') \
-                    | sed -n 's/^-[^-]/&/p' | sed 's/^-//' | tee readme.removed || true
+                  echo ""
+                  echo "────────────────────────────────────────"
+                  echo "Only added / removed lines:"
+                  echo "────────────────────────────────────────"
+                  git --no-pager diff -U0 $BASE..$HEAD -- $files | sed -n 's/^+[^+]/&/p' | sed 's/^+//' | tee readme.added || true
+                  git --no-pager diff -U0 $BASE..$HEAD -- $files | sed -n 's/^-[^-]/&/p' | sed 's/^-//' | tee readme.removed || true
                 else
-                  : > readme.added
-                  : > readme.removed
+                  : > readme.diff; : > readme.numstat; : > readme.added; : > readme.removed
                 fi
 
                 ADDED_WORDS=$(cat readme.added 2>/dev/null | tr -s '[:space:]' '\\n' | grep -c -E '\\S' || true)
@@ -242,9 +248,7 @@ pipeline {
             echo ────────────────────────────────────────
             if not "%FILES%"=="" (
               git --no-pager diff --no-color -U0 %DIFF_BASE%..%DIFF_HEAD% -- %FILES% > readme.diff 2>nul || type NUL > readme.diff
-            ) else (
-              type NUL > readme.diff
-            )
+            ) else ( type NUL > readme.diff )
 
             echo.
             echo ────────────────────────────────────────
@@ -252,9 +256,7 @@ pipeline {
             echo ────────────────────────────────────────
             if not "%FILES%"=="" (
               git --no-pager diff --no-color --numstat %DIFF_BASE%..%DIFF_HEAD% -- %FILES% > readme.numstat 2>nul || type NUL > readme.numstat
-            ) else (
-              type NUL > readme.numstat
-            )
+            ) else ( type NUL > readme.numstat )
 
             echo.
             echo ────────────────────────────────────────
@@ -264,8 +266,7 @@ pipeline {
               git --no-pager diff -U0 %DIFF_BASE%..%DIFF_HEAD% -- %FILES% | findstr /R "^[+]" | findstr /V "^[+][+]" > readme.added 2>nul || type NUL > readme.added
               git --no-pager diff -U0 %DIFF_BASE%..%DIFF_HEAD% -- %FILES% | findstr /R "^[-]" | findstr /V "^[-][-]" > readme.removed 2>nul || type NUL > readme.removed
             ) else (
-              type NUL > readme.added
-              type NUL > readme.removed
+              type NUL > readme.added & type NUL > readme.removed
             )
 
             rem Word counts via PowerShell
@@ -289,7 +290,9 @@ pipeline {
             }
         }
 
-        // 6) Run tests only if README changed
+    /* -----------------------------------------------------------
+     * 6) Run tests ONLY when README changed
+     * ----------------------------------------------------------- */
         stage('Test') {
             when { expression { env.README_CHANGED?.trim() == 'true' } }
             steps {
@@ -312,7 +315,9 @@ pipeline {
             }
         }
 
-        // 7) Persist current head for the next run’s base
+    /* -----------------------------------------------------------
+     * 7) Persist current head for the next run (stable base)
+     * ----------------------------------------------------------- */
         stage('Persist state for next run') {
             steps {
                 script {
