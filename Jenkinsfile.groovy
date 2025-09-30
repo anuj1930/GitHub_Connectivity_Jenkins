@@ -9,7 +9,7 @@ pipeline {
     }
 
     triggers {
-        // Poll every ~5 minutes (use webhook if available)
+        // Poll every ~5 minutes (prefer GitHub webhooks if you can)
         pollSCM('H/5 * * * *')
     }
 
@@ -26,12 +26,13 @@ pipeline {
                 checkout scm
                 script {
                     if (isUnix()) {
-                        sh 'git --no-pager log -1 --oneline || true'
-                        // Ensure enough history for reliable diffs (first build or shallow clones)
                         sh '''
                           set -e
+                          git --no-pager log -1 --oneline || true
                           git config --global --add safe.directory "$PWD"
-                          if git rev-parse --is-shallow-repository >/dev/null 2>&1; then
+
+                          # Correct shallow detection: check the printed value, not exit code
+                          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
                             git fetch --unshallow --tags || true
                           else
                             git fetch --all --tags --prune || true
@@ -40,12 +41,11 @@ pipeline {
                     } else {
                         bat '''@echo off
                         git --no-pager log -1 --oneline || exit /b 0
-                        '''
-                        // On Windows you may want to ensure full history too (if needed)
-                        bat '''@echo off
                         git config --global --add safe.directory "%CD%" 2>nul
-                        git rev-parse --is-shallow-repository >nul 2>&1
-                        if %ERRORLEVEL%==0 (
+
+                        rem Correct shallow detection: check output, not exit code
+                        for /f "delims=" %%S in ('git rev-parse --is-shallow-repository') do set SHALLOW=%%S
+                        if /I "%SHALLOW%"=="true" (
                           git fetch --unshallow --tags || exit /b 0
                         ) else (
                           git fetch --all --tags --prune || exit /b 0
@@ -60,7 +60,7 @@ pipeline {
             steps {
                 script {
                     def changedFiles = []
-                    // 1) First, try Jenkins changeSets
+                    // Prefer Jenkins changeSets
                     for (cs in currentBuild.changeSets) {
                         for (entry in cs.items) {
                             for (file in entry.affectedFiles) {
@@ -69,18 +69,21 @@ pipeline {
                         }
                     }
 
-                    // 2) If empty, fall back to raw git diff name-only
+                    // Fallback to git diff if changeSets empty (common with pollSCM)
                     if (changedFiles.isEmpty()) {
                         echo 'No changeSets found; falling back to git diff to detect changed files.'
-                        def from = (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: env.GIT_PREVIOUS_COMMIT)
-                        def to
+
+                        String from = (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: env.GIT_PREVIOUS_COMMIT)
+                        String to
 
                         if (isUnix()) {
                             to = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
                             if (!from?.trim()) {
-                                // previous commit, else root
-                                from = sh(returnStdout: true,
-                                    script: '(git rev-parse HEAD~1 2>/dev/null) || (git rev-list --max-parents=0 HEAD | tail -1)').trim()
+                                // previous commit else root
+                                from = sh(
+                                  returnStdout: true,
+                                  script: '(git rev-parse HEAD~1 2>/dev/null) || (git rev-list --max-parents=0 HEAD | head -1)'
+                                ).trim()
                             }
                             if (from?.trim()) {
                                 def out = sh(returnStdout: true,
@@ -95,13 +98,13 @@ pipeline {
                             """).trim()
 
                             if (!from?.trim()) {
-                                // previous commit, else root
+                                // Root commit via pure git (no Unix tools)
                                 from = bat(returnStdout: true, script: """@echo off
-                                for /f "delims=" %%A in ('git rev-list --max-parents=0 HEAD ^| tail -1') do @echo %%A
+                                for /f "delims=" %%A in ('git rev-list --max-parents=0 HEAD') do @echo %%A
                                 """).trim()
                                 if (!from?.trim()) {
                                     from = bat(returnStdout: true, script: """@echo off
-                                    for /f "delims=" %%A in ('git rev-parse HEAD~1 2^>nul') do @echo %%A
+                                    for /f "delims=" %%A in ('git rev-parse HEAD^ 2^>nul') do @echo %%A
                                     """).trim()
                                 }
                             }
@@ -120,20 +123,18 @@ pipeline {
 
                     def normalized = changedFiles.collect { p ->
                         (p ?: '')
-                            .trim()
-                            .replace('\\', '/')
-                            .toLowerCase()
+                          .trim()
+                          .replace('\\', '/')
+                          .toLowerCase()
                     }
                     echo "Changed files (normalized): ${normalized}"
 
-                    // Match README files at root or any folder, with or without extension
-                    def readmeChanged = normalized.any { f ->
-                        f == 'readme' ||
-                        f == 'readme.md' ||
-                        f.startsWith('readme.') ||
-                        f.endsWith('/readme') ||
-                        f.endsWith('/readme.md') ||
-                        f.contains('/readme.')
+                    // Bullet-proof README match: (^|/)readme(.anything)?$
+                    def readmeChanged = normalized.any { f -> f ==~ /(^|\/)readme(\..*)?$/ }
+
+                    // Optional: tiny, helpful debug per file (keeps logs professional)
+                    normalized.each { f ->
+                        echo String.format('  - match(readme)? %-40s : %s', f, (f ==~ /(^|\/)readme(\..*)?$/))
                     }
 
                     env.README_CHANGED = readmeChanged ? 'true' : 'false'
@@ -142,21 +143,19 @@ pipeline {
             }
         }
 
-        // ---- NEW: Show exactly what changed in README and archive artifacts ----
         stage('Show README diff') {
             when { environment name: 'README_CHANGED', value: 'true' }
             steps {
                 script {
-                    // Find base and head for diff
+                    String base = (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: env.GIT_PREVIOUS_COMMIT)
                     String head
-                    String base = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: env.GIT_PREVIOUS_COMMIT
 
                     if (isUnix()) {
                         head = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
                         if (!base?.trim()) {
                             base = sh(
-                                returnStdout: true,
-                                script: '(git rev-parse HEAD^ 2>/dev/null) || (git rev-list --max-parents=0 HEAD | tail -1)'
+                              returnStdout: true,
+                              script: '(git rev-parse HEAD^ 2>/dev/null) || (git rev-list --max-parents=0 HEAD | head -1)'
                             ).trim()
                         }
 
@@ -188,13 +187,12 @@ pipeline {
                         for /f "delims=" %%A in ('git rev-parse HEAD') do @echo %%A
                         """).trim()
                         if (!base?.trim()) {
-                            // try previous commit, else root
                             base = bat(returnStdout: true, script: """@echo off
                             for /f "delims=" %%A in ('git rev-parse HEAD^ 2^>nul') do @echo %%A
                             """).trim()
                             if (!base?.trim()) {
                                 base = bat(returnStdout: true, script: """@echo off
-                                for /f "delims=" %%A in ('git rev-list --max-parents=0 HEAD ^| tail -1') do @echo %%A
+                                for /f "delims=" %%A in ('git rev-list --max-parents=0 HEAD') do @echo %%A
                                 """).trim()
                             }
                         }
@@ -244,7 +242,6 @@ pipeline {
                         sh "\"${mvnCmd}\" -v || true"
                     }
 
-                    // mvn test includes compile phases for main + test code
                     def line = "\"${mvnCmd}\" -B -U -Dmaven.repo.local=${MAVEN_REPO} test"
                     if (win) { bat line } else { sh line }
                 }
