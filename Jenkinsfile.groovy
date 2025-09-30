@@ -20,7 +20,6 @@ pipeline {
     }
 
     stages {
-
         stage('Checkout (from repo in code)') {
             steps {
                 git(
@@ -28,7 +27,7 @@ pipeline {
                     branch: env.GIT_BRANCH_NAME,
                     changelog: true,
                     poll: true
-                    // credentialsId: 'github-credentials' // <-- uncomment if private repo
+                // credentialsId: 'github-credentials' // <-- uncomment if private repo
                 )
 
                 // Show latest commit (cross-platform)
@@ -36,9 +35,7 @@ pipeline {
                     if (isUnix()) {
                         sh 'git --no-pager log -1 --oneline || true'
                     } else {
-                        bat """@echo off
-git --no-pager log -1 --oneline || exit /b 0
-"""
+                        bat '''@echo off git --no-pager log -1 --oneline || exit /b 0 '''
                     }
                 }
             }
@@ -59,26 +56,22 @@ git --no-pager log -1 --oneline || exit /b 0
 
                     // 2) Fallback: compute changed files via git diff (first/manual runs)
                     if (changedFiles.isEmpty()) {
-                        echo "No changeSets found; falling back to git diff to detect changed files."
+                        echo 'No changeSets found; falling back to git diff to detect changed files.'
 
                         def from = (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: env.GIT_PREVIOUS_COMMIT)
                         def to
 
                         if (isUnix()) {
-                            to = sh(returnStdout: true, script: "git rev-parse HEAD").trim()
+                            to = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
                             if (!from?.trim()) {
                                 from = sh(returnStdout: true, script: "git rev-parse HEAD~1 || echo ''").trim()
                             }
                         } else {
-                            to = bat(returnStdout: true, script: """@echo off
-for /f "delims=" %%A in ('git rev-parse HEAD') do @echo %%A
-""").trim()
+                            to = bat(returnStdout: true, script: """@echo off for /f "delims=" %%A in ('git rev-parse HEAD') do @echo %%A """).trim()
 
                             if (!from?.trim()) {
                                 // If first commit, HEAD~1 may fail; produce empty output instead of failing
-                                from = bat(returnStdout: true, script: """@echo off
-for /f "delims=" %%A in ('git rev-parse HEAD^~1 2^>nul') do @echo %%A
-""").trim()
+                                from = bat(returnStdout: true, script: """@echo off for /f "delims=" %%A in ('git rev-parse HEAD^~1 2^>nul') do @echo %%A """).trim()
                             }
                         }
 
@@ -88,13 +81,11 @@ for /f "delims=" %%A in ('git rev-parse HEAD^~1 2^>nul') do @echo %%A
                                              script: "git diff --name-only ${from} ${to} || true").trim()
                                 if (out) changedFiles = out.split('\\r?\\n') as List<String>
                             } else {
-                                def out = bat(returnStdout: true, script: """@echo off
-git diff --name-only ${from} ${to} || exit /b 0
-""").trim()
+                                def out = bat(returnStdout: true, script: """@echo off git diff --name-only ${from} ${to} || exit /b 0 """).trim()
                                 if (out) changedFiles = out.split('\\r?\\n') as List<String>
                             }
                         } else {
-                            echo "Could not determine previous commit (first build or shallow history)."
+                            echo 'Could not determine previous commit (first build or shallow history).'
                         }
                     }
 
