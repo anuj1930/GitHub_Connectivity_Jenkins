@@ -123,57 +123,57 @@ pipeline {
             }
         }
 
-        stage('Build') {
-            when { environment name: 'README_CHANGED', value: 'true' }
-            steps {
-                echo 'Building the project...'
-                script {
-                    boolean win = !isUnix()
-                    boolean hasWrapper = fileExists('mvnw') || fileExists('mvnw.cmd')
-                    String mvnCmd = hasWrapper ? (win ? 'mvnw.cmd' : './mvnw')
-                                               : (win ? 'mvn.cmd'  : 'mvn')
+        // stage('Build') {
+        //     when { environment name: 'README_CHANGED', value: 'true' }
+        //     steps {
+        //         echo 'Building the project...'
+        //         script {
+        //             boolean win = !isUnix()
+        //             boolean hasWrapper = fileExists('mvnw') || fileExists('mvnw.cmd')
+        //             String mvnCmd = hasWrapper ? (win ? 'mvnw.cmd' : './mvnw')
+        //                                        : (win ? 'mvn.cmd'  : 'mvn')
 
-                    // Print versions (don’t fail pipeline if mvn -v errors)
-                    if (win) {
-                        bat "\"${mvnCmd}\" -v || exit /b 0"
-                    } else {
-                        sh "\"${mvnCmd}\" -v || true"
-                    }
+        //             // Print versions (don’t fail pipeline if mvn -v errors)
+        //             if (win) {
+        //                 bat "\"${mvnCmd}\" -v || exit /b 0"
+        //             } else {
+        //                 sh "\"${mvnCmd}\" -v || true"
+        //             }
 
-                    // Build + unit tests (verify) with a workspace-local repo cache
-                    def line = "\"${mvnCmd}\" -B -U -Dmaven.repo.local=${MAVEN_REPO} clean verify"
-                    if (win) { bat line } else { sh line }
-                }
-            }
-        }
+        //             // Build + unit tests (verify) with a workspace-local repo cache
+        //             def line = "\"${mvnCmd}\" -B -U -Dmaven.repo.local=${MAVEN_REPO} clean verify"
+        //             if (win) { bat line } else { sh line }
+        //         }
+        //     }
+        // }
 
-        stage('Test') {
-            when { environment name: 'README_CHANGED', value: 'true' }
-            steps {
-                echo 'Running tests...'
-                script {
-                    boolean win = !isUnix()
-                    boolean hasWrapper = fileExists('mvnw') || fileExists('mvnw.cmd')
-                    String mvnCmd = hasWrapper ? (win ? 'mvnw.cmd' : './mvnw')
-                                               : (win ? 'mvn.cmd'  : 'mvn')
+        // stage('Test') {
+        //     when { environment name: 'README_CHANGED', value: 'true' }
+        //     steps {
+        //         echo 'Running tests...'
+        //         script {
+        //             boolean win = !isUnix()
+        //             boolean hasWrapper = fileExists('mvnw') || fileExists('mvnw.cmd')
+        //             String mvnCmd = hasWrapper ? (win ? 'mvnw.cmd' : './mvnw')
+        //                                        : (win ? 'mvn.cmd'  : 'mvn')
 
-                    def line = "\"${mvnCmd}\" -B -Dmaven.repo.local=${MAVEN_REPO} test"
-                    if (win) { bat line } else { sh line }
-                }
-            }
-            post {
-                always {
-                    junit '**/target/surefire-reports/*.xml'
-                }
-            }
-        }
+        //             def line = "\"${mvnCmd}\" -B -Dmaven.repo.local=${MAVEN_REPO} test"
+        //             if (win) { bat line } else { sh line }
+        //         }
+        //     }
+        //     post {
+        //         always {
+        //             junit '**/target/surefire-reports/*.xml'
+        //         }
+        //     }
+        // }
 
-        stage('No README change — Skip Build/Test') {
-            when { not { environment name: 'README_CHANGED', value: 'true' } }
-            steps {
-                echo 'No README changes detected; skipping Build/Test stages.'
-            }
-        }
+        // stage('No README change — Skip Build/Test') {
+        //     when { not { environment name: 'README_CHANGED', value: 'true' } }
+        //     steps {
+        //         echo 'No README changes detected; skipping Build/Test stages.'
+        //     }
+        // }
 
         stage('Build') {
             when { changeset '**/README*' }   // matches README and README.* anywhere
