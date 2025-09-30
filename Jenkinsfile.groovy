@@ -2,35 +2,28 @@ pipeline {
     agent any
 
     options {
-        timestamps()                 // requires Timestamper plugin
-        ansiColor('xterm')           // requires AnsiColor plugin
+        timestamps()
+        ansiColor('xterm')
         skipDefaultCheckout(true)
         buildDiscarder(logRotator(numToKeepStr: '30'))
     }
 
     triggers {
-        pollSCM('H/5 * * * *')       // every ~5 minutes
+        pollSCM('H/5 * * * *')
     }
 
     environment {
         README_CHANGED = 'false'
         GIT_BRANCH_NAME = 'main'
         GIT_REPO_URL   = 'https://github.com/anuj1930/GitHub_Connectivity_Jenkins.git'
-        MAVEN_REPO     = "${WORKSPACE}/.m2/repository"  // local Maven cache for speed
+        MAVEN_REPO     = "${WORKSPACE}/.m2/repository"
     }
 
     stages {
         stage('Checkout (from repo in code)') {
             steps {
-                git(
-                    url: env.GIT_REPO_URL,
-                    branch: env.GIT_BRANCH_NAME,
-                    changelog: true,
-                    poll: true
-                // credentialsId: 'github-credentials' // <-- uncomment if private repo
-                )
+                checkout scm
 
-                // Show latest commit (cross-platform)
                 script {
                     if (isUnix()) {
                         sh 'git --no-pager log -1 --oneline || true'
@@ -46,7 +39,6 @@ pipeline {
         stage('Detect README changes') {
             steps {
                 script {
-                    // 1) Prefer Jenkins changeSets (when build triggered by SCM)
                     def changedFiles = []
                     for (cs in currentBuild.changeSets) {
                         for (entry in cs.items) {
@@ -56,7 +48,6 @@ pipeline {
                         }
                     }
 
-                    // 2) Fallback: compute changed files via git diff (first/manual runs)
                     if (changedFiles.isEmpty()) {
                         echo 'No changeSets found; falling back to git diff to detect changed files.'
 
@@ -74,7 +65,6 @@ pipeline {
                             """).trim()
 
                             if (!from?.trim()) {
-                                // If first commit, HEAD~1 may fail; produce empty output instead of failing
                                 from = bat(returnStdout: true, script: """@echo off
                                 for /f "delims=" %%A in ('git rev-parse HEAD^~1 2^>nul') do @echo %%A
                                 """).trim()
@@ -99,8 +89,6 @@ pipeline {
 
                     echo "Changed files (raw): ${changedFiles}"
 
-                    // --- Robust cross-platform detection ---
-                    // Normalize: trim whitespace, convert backslashes, lowercase
                     def normalized = changedFiles.collect { p ->
                         (p ?: '')
                             .trim()
@@ -109,7 +97,6 @@ pipeline {
                     }
                     echo "Changed files (normalized): ${normalized}"
 
-                    // Match README variants anywhere in the tree
                     def readmeChanged = normalized.any { f ->
                         f == 'readme' ||
                         f == 'readme.md' ||
@@ -130,17 +117,14 @@ pipeline {
                 script {
                     boolean win = !isUnix()
                     boolean hasWrapper = fileExists('mvnw') || fileExists('mvnw.cmd')
-                    String mvnCmd = hasWrapper ? (win ? 'mvnw.cmd' : './mvnw')
-                                               : (win ? 'mvn.cmd'  : 'mvn')
+                    String mvnCmd = hasWrapper ? (win ? 'mvnw.cmd' : './mvnw') : (win ? 'mvn.cmd' : 'mvn')
 
-                    // Print versions (don’t fail pipeline if mvn -v errors)
                     if (win) {
                         bat "\"${mvnCmd}\" -v || exit /b 0"
                     } else {
                         sh "\"${mvnCmd}\" -v || true"
                     }
 
-                    // Build + unit tests (verify) with a workspace-local repo cache
                     def line = "\"${mvnCmd}\" -B -U -Dmaven.repo.local=${MAVEN_REPO} clean verify"
                     if (win) { bat line } else { sh line }
                 }
@@ -154,8 +138,7 @@ pipeline {
                 script {
                     boolean win = !isUnix()
                     boolean hasWrapper = fileExists('mvnw') || fileExists('mvnw.cmd')
-                    String mvnCmd = hasWrapper ? (win ? 'mvnw.cmd' : './mvnw')
-                                               : (win ? 'mvn.cmd'  : 'mvn')
+                    String mvnCmd = hasWrapper ? (win ? 'mvnw.cmd' : './mvnw') : (win ? 'mvn.cmd' : 'mvn')
 
                     def line = "\"${mvnCmd}\" -B -Dmaven.repo.local=${MAVEN_REPO} test"
                     if (win) { bat line } else { sh line }
