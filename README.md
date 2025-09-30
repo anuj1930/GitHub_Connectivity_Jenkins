@@ -7,3 +7,6 @@ Now checking for the changes in readme file.
 Get the new check for changes.
 
 ## Fast change it is...
+```
+Java
+```
