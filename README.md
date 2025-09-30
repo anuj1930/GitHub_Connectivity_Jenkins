@@ -14,8 +14,10 @@ Java
         public static void main(String[] args) {
             System.out.println("Hello, World!");
             System.out.println("Hey this is new update!");
-            int i = 0;
+            int i = 1;
             print(i);
+            //result = 1
         }
     }
 ```
+## Falsy update.
