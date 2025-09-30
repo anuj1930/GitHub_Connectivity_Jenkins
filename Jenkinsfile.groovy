@@ -109,10 +109,10 @@ pipeline {
                     List<String> changedReadmes = changedList ? changedList.split('\\r?\\n') as List<String> : []
                     echo "Changed README files: ${changedReadmes}"
 
-                    // Set env explicitly (be cautious about Groovy truthiness)
-                    env['README_CHANGED'] = (changedReadmes && changedReadmes.size() > 0) ? 'true' : 'false'
-                    env['DIFF_BASE'] = base
-                    env['DIFF_HEAD'] = head
+                    // ✅ Sandbox-safe env assignments (no bracket syntax)
+                    env.README_CHANGED = (changedReadmes && changedReadmes.size() > 0) ? 'true' : 'false'
+                    env.DIFF_BASE = base
+                    env.DIFF_HEAD = head
 
                     echo "README_CHANGED=${env.README_CHANGED}"
                 }
@@ -120,7 +120,7 @@ pipeline {
         }
 
         stage('Show README diff') {
-            // Use expression to evaluate the *current* env value set above
+            // ✅ Use expression to read the runtime env value
             when { expression { env.README_CHANGED?.trim() == 'true' } }
             steps {
                 script {
@@ -151,11 +151,11 @@ pipeline {
                           git --no-pager diff -U0 ${base}...${head} -- ':(glob)README*' ':(glob)**/README*' \
                             | sed -n 's/^+[^+]/&/p' | sed 's/^+//' | tee readme.added || true
 
-                          # Also capture only removed lines for word stats
+                          # Only removed lines (exclude diff headers)
                           git --no-pager diff -U0 ${base}...${head} -- ':(glob)README*' ':(glob)**/README*' \
-                            | sed -n 's/^-\\([^-]\\)/\\1/p' | sed 's/^-//' | tee readme.removed || true
+                            | sed -n 's/^-[^-]/&/p' | sed 's/^-//' | tee readme.removed || true
 
-                          # Word counts (added/removed)
+                          # Word counts
                           ADDED_WORDS=\$(cat readme.added 2>/dev/null | tr -s '[:space:]' '\\n' | grep -c -E '\\S' || true)
                           REMOVED_WORDS=\$(cat readme.removed 2>/dev/null | tr -s '[:space:]' '\\n' | grep -c -E '\\S' || true)
                           printf "added_words=%s\\nremoved_words=%s\\n" "\$ADDED_WORDS" "\$REMOVED_WORDS" | tee readme.wordstats
@@ -186,22 +186,20 @@ pipeline {
                         echo ────────────────────────────────────────
                         git --no-pager diff -U0 ${base}...${head} -- ":(glob)README*" ":(glob)**/README*" | findstr /R "^[+]" | findstr /V "^[+][+]" > readme.added 2>nul || type NUL > readme.added
 
-                        rem Capture only removed lines (not headers like --- a/file)
+                        rem Only removed lines (exclude headers like --- a/file)
                         git --no-pager diff -U0 ${base}...${head} -- ":(glob)README*" ":(glob)**/README*" | findstr /R "^[-]" | findstr /V "^[-][-]" > readme.removed 2>nul || type NUL > readme.removed
 
                         rem Word counts via PowerShell
                         powershell -NoProfile -Command ^
-                          "$a = (Test-Path 'readme.added')    ? (Get-Content 'readme.added'  -Raw) : ''; " ^
-                          "$r = (Test-Path 'readme.removed')  ? (Get-Content 'readme.removed' -Raw) : ''; " ^
+                          "$a = (Test-Path 'readme.added')   ? (Get-Content 'readme.added'  -Raw) : ''; " ^
+                          "$r = (Test-Path 'readme.removed') ? (Get-Content 'readme.removed' -Raw) : ''; " ^
                           "$aCount = ($a -split '\\s+') | Where-Object { \\$_ -ne '' } | Measure-Object | ForEach-Object Count; " ^
                           "$rCount = ($r -split '\\s+') | Where-Object { \\$_ -ne '' } | Measure-Object | ForEach-Object Count; " ^
                           "'added_words='  + $aCount + \"`n\" + 'removed_words=' + $rCount | Out-File 'readme.wordstats' -Encoding ascii; " ^
                           "Write-Host '────────────────────────────────────────'; " ^
                           "Write-Host 'Word-level summary:'; " ^
-                          "Write-Host '────────────────────────────────────────'; " ^
                           "Write-Host ('Added words   : ' + $aCount); " ^
                           "Write-Host ('Removed words : ' + $rCount); "
-
                         """
                     }
 
