@@ -1,2 +1,5 @@
 # GitHub_Connectivity_Jenkins
 I want to connect the github with Jenkins
+
+This is my first attempt to connect the Jenkins.
+This is the changes
