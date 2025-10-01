@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        JAVA_HOME = tool name: 'Adoptium-21', type: 'jdk' // Replace with the exact name you used in Jenkins
+        JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.1.12-hotspot' // Replace with the exact name you used in Jenkins
         PATH = "${JAVA_HOME}/bin:${env.PATH}"
     }
 
