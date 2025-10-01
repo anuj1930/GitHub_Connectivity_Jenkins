@@ -1,36 +1,39 @@
 pipeline {
     agent any
 
+    environment {
+        JAVA_HOME = tool name: 'Adoptium-21', type: 'jdk' // Replace with the exact name you used in Jenkins
+        PATH = "${JAVA_HOME}/bin:${env.PATH}"
+    }
+
     stages {
         stage('Checkout') {
             steps {
-                git url: 'https://github.com/anuj1930/GitHub_Connectivity_Jenkins.git', branch: 'main'
+                checkout scm
             }
         }
 
         stage('Compile') {
             steps {
-                script {
-                    sh 'javac Main.java'
-                }
+                echo '🔧 Compiling Java file...'
+                sh 'javac Main.java'
             }
         }
 
         stage('Run') {
             steps {
-                script {
-                    sh 'java Main'
-                }
+                echo '🚀 Running Java file...'
+                sh 'java Main'
             }
         }
     }
 
     post {
-        failure {
-            echo 'Build failed. Please check the logs.'
-        }
         success {
-            echo 'Java file executed successfully.'
+            echo '✅ Java file executed successfully.'
+        }
+        failure {
+            echo '❌ Build failed. Please check the logs.'
         }
     }
 }
