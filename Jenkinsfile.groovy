@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.1.12-hotspot' // Replace with the exact name you used in Jenkins
+        JAVA_HOME = 'C:/Program Files/Eclipse Adoptium/jdk-21.0.1.12-hotspot'
         PATH = "${JAVA_HOME}/bin:${env.PATH}"
     }
 
@@ -16,14 +16,14 @@ pipeline {
         stage('Compile') {
             steps {
                 echo '🔧 Compiling Java file...'
-                sh 'javac Main.java'
+                bat 'javac Main.java'
             }
         }
 
         stage('Run') {
             steps {
                 echo '🚀 Running Java file...'
-                sh 'java Main'
+                bat 'java Main'
             }
         }
     }
